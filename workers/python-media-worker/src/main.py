@@ -2,7 +2,6 @@ import logging
 import signal
 import time
 import uuid
-from collections.abc import Callable
 from threading import Event, Lock, Thread
 from typing import Any, cast
 
