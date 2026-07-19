@@ -1,0 +1,23 @@
+{
+  "name": "@2mbi/test-support",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.ts",
+    "test:e2e": "vitest run --config vitest.e2e.ts"
+  },
+  "dependencies": {
+    "@2mbi/contracts": "workspace:*",
+    "hono": "^4.6.0",
+    "ioredis": "^5.4.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

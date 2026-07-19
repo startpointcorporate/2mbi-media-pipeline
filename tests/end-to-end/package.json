@@ -1,0 +1,17 @@
+{
+  "name": "@2mbi/e2e-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:e2e": "vitest run"
+  },
+  "dependencies": {
+    "@2mbi/test-support": "workspace:*",
+    "@2mbi/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

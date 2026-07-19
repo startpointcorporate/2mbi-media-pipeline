@@ -1,0 +1,23 @@
+{
+  "name": "2mbi-media-pipeline",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "lint": "pnpm -r lint",
+    "format": "biome check --write .",
+    "test": "pnpm -r test",
+    "test:integration": "pnpm --filter @2mbi/test-support test:integration",
+    "test:e2e": "pnpm --filter @2mbi/test-support test:e2e",
+    "db:migrate": "pnpm --filter @2mbi/media-pipeline-api db:migrate",
+    "clean": "pnpm -r clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  }
+}
