@@ -35,9 +35,6 @@ jobs:
 
       - name: Unit tests
         run: pnpm -r test -- --reporter=verbose
-        env:
-          # Integration tests are skipped when these are not set
-          REDIS_URL: ""
 
   typescript-integration:
     name: TypeScript — Integration
