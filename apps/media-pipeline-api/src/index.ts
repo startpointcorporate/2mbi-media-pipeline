@@ -4,6 +4,7 @@ import { parseEnv } from './env.js';
 import publicRoutes from './routes/public.js';
 import internalRoutes from './routes/internal.js';
 import { startDispatcher } from './outbox/dispatcher.js';
+import { ensureBuckets } from './minio.js';
 
 const app = new Hono();
 
@@ -19,6 +20,9 @@ serve(
   },
   (info) => {
     console.log(`Media Pipeline API listening on http://localhost:${info.port}`);
+    ensureBuckets().catch((err) => {
+      console.error('Failed to ensure MinIO buckets (non-fatal):', err);
+    });
   },
 );
 

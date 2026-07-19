@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, HeadBucketCommand, CreateBucketCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { parseEnv } from './env.js';
 
@@ -13,6 +13,23 @@ const s3Client = new S3Client({
   },
   forcePathStyle: true,
 });
+
+const REQUIRED_BUCKETS = ['media-source', 'media-generated', 'media-temp', 'media-transcripts'];
+
+async function ensureBuckets(): Promise<void> {
+  for (const bucket of REQUIRED_BUCKETS) {
+    try {
+      await s3Client.send(new HeadBucketCommand({ Bucket: bucket }));
+    } catch (err: any) {
+      if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
+        await s3Client.send(new CreateBucketCommand({ Bucket: bucket }));
+        console.log(`Created bucket: ${bucket}`);
+      } else {
+        console.error(`Failed to check/create bucket ${bucket}:`, err);
+      }
+    }
+  }
+}
 
 async function putObject(
   bucket: string,
@@ -43,4 +60,4 @@ async function presignedGetUrl(
   );
 }
 
-export { s3Client, putObject, presignedGetUrl };
+export { s3Client, ensureBuckets, putObject, presignedGetUrl };

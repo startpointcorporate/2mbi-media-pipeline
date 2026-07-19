@@ -1,8 +1,9 @@
 import logging
+import signal
 import time
 import uuid
 from collections.abc import Callable
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any, cast
 
 import httpx
@@ -10,7 +11,7 @@ import redis as redis_lib
 
 from src.capabilities import supports_step
 from src.config import settings
-from src.handlers import handle_ingestion
+from src.handlers import HANDLERS
 from src.models import TaskMessage, WorkerResultRequest
 
 logging.basicConfig(
@@ -19,18 +20,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("python-media-worker")
 
-HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "ingestion": handle_ingestion,
-}
+_active_steps: set[str] = set()
+_active_steps_lock = Lock()
 
 
 def send_heartbeat(
     client: httpx.Client,
     worker_id: str,
-    active_steps: list[dict[str, Any]],
 ) -> None:
-    for step in active_steps:
-        step_id = step.get("stepId")
+    with _active_steps_lock:
+        step_ids = list(_active_steps)
+    for step_id in step_ids:
         if not step_id:
             continue
         try:
@@ -38,7 +38,7 @@ def send_heartbeat(
                 f"{settings.media_api_url}/internal/job-steps/{step_id}/heartbeat",
                 json={
                     "workerId": worker_id,
-                    "progress": step.get("progress", 0),
+                    "progress": 0,
                     "leaseDurationSeconds": 60,
                 },
                 timeout=10,
@@ -49,10 +49,9 @@ def send_heartbeat(
 
 
 def heartbeat_loop(worker_id: str, stop: Event) -> None:
-    active_steps: list[dict[str, Any]] = []
     with httpx.Client(base_url=settings.media_api_url) as client:
         while not stop.is_set():
-            send_heartbeat(client, worker_id, active_steps)
+            send_heartbeat(client, worker_id)
             stop.wait(15)
 
 
@@ -90,9 +89,19 @@ def main() -> None:
     heartbeat_thread.start()
     logger.info("Heartbeat thread started")
 
+    shutdown = Event()
+
+    def handle_signal(signum: int, _frame: Any) -> None:
+        logger.info("Received signal %d, shutting down...", signum)
+        shutdown.set()
+        stop_heartbeat.set()
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
     logger.info("Waiting for messages...")
 
-    while True:
+    while not shutdown.is_set():
         try:
             raw_results = redis_client.xreadgroup(
                 groupname=settings.consumer_group,
@@ -115,6 +124,9 @@ def main() -> None:
                 process_message(
                     redis_client, worker_id, stream_name, msg_id, msg_data
                 )
+
+    heartbeat_thread.join(timeout=5)
+    logger.info("Worker shut down gracefully")
 
 
 def process_message(
@@ -150,33 +162,27 @@ def process_message(
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
         return
 
+    step_id = task.data.get("stepId", "")
+    if step_id:
+        with _active_steps_lock:
+            _active_steps.add(step_id)
+
     try:
-        result = handler(task.data)
+        result = handler(task, settings)
     except Exception as exc:
         logger.error("Handler failed for step '%s' [%s]: %s", task.step, msg_id, exc)
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
         return
-
-    result_type = {
-        "ingestion": "MediaIngestionCompleted",
-        "transcription": "TranscriptionCompleted",
-        "render-video": "RenderCompleted",
-        "render-image": "ImageGenerationCompleted",
-    }.get(task.step, f"{task.step}Completed")
-
-    payload = WorkerResultRequest(
-        jobId=task.data.get("jobId", ""),
-        stepId=task.data.get("stepId", ""),
-        idempotencyKey=task.idempotency_key,
-        resultType=result_type,
-        result=result,
-    )
+    finally:
+        if step_id:
+            with _active_steps_lock:
+                _active_steps.discard(step_id)
 
     try:
         with httpx.Client(base_url=settings.media_api_url) as client:
             resp = client.post(
                 "/internal/worker-results",
-                json=payload.model_dump(by_alias=True),
+                json=result.model_dump(by_alias=True),
                 timeout=30,
             )
             logger.info("Worker result posted: %s", resp.status_code)

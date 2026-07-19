@@ -3,6 +3,7 @@ import type { EventEnvelope } from '@2mbi/contracts';
 import redis from './redis.js';
 import { parseEnv } from './env.js';
 import { handleMediaUploaded } from './handlers/media-uploaded.js';
+import { processRetrySchedule } from './retry.js';
 
 const handlers: Record<string, (event: EventEnvelope) => Promise<void>> = {
   MediaUploaded: handleMediaUploaded,
@@ -66,6 +67,8 @@ export async function startOrchestrator(): Promise<void> {
           await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
         }
       }
+
+      await processRetrySchedule();
     } catch (err) {
       console.error('Orchestrator loop error:', err);
     }

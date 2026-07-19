@@ -1,6 +1,7 @@
 import type { EventEnvelope } from '@2mbi/contracts';
 import redis from '../redis.js';
 import { parseEnv } from '../env.js';
+import { scheduleRetry } from '../retry.js';
 
 export async function handleMediaUploaded(event: EventEnvelope): Promise<void> {
   const env = parseEnv();
@@ -14,8 +15,8 @@ export async function handleMediaUploaded(event: EventEnvelope): Promise<void> {
     throw new Error('Missing required fields in MediaUploaded event data');
   }
 
-  const command = {
-    schemaVersion: 1 as const,
+  const command: Record<string, unknown> = {
+    schemaVersion: 1,
     idempotencyKey: crypto.randomUUID(),
     correlationId: event.correlationId,
     causationId: event.messageId,
@@ -24,5 +25,11 @@ export async function handleMediaUploaded(event: EventEnvelope): Promise<void> {
     occurredAt: new Date().toISOString(),
   };
 
-  await redis.xadd(env.STREAM_MEDIA, '*', 'payload', JSON.stringify(command));
+  try {
+    await redis.xadd(env.STREAM_MEDIA, '*', 'payload', JSON.stringify(command));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to publish IngestionRequested, scheduling retry: ${message}`);
+    await scheduleRetry('IngestionRequested', command, 0);
+  }
 }
