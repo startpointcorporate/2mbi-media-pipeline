@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
-import { query } from '../db.js';
+import { query, getClient } from '../db.js';
 import { putObject } from '../minio.js';
 import { uuid } from '../lib/crypto.js';
 
@@ -33,26 +33,28 @@ router.post('/api/v1/media/upload', async (c) => {
 
     await putObject('media-source', sourceKey, buffer, mimeType);
 
-    await query('BEGIN');
+    const client = await getClient();
     try {
-      await query(
+      await client.query('BEGIN');
+
+      await client.query(
         `INSERT INTO media_pipeline.media_assets
           (id, tenant_id, product_id, original_filename, mime_type, file_size, sha256, source_key, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $9)`,
         [mediaId, tenantId, productId, filename, mimeType, fileSize, sha256, sourceKey, now],
       );
 
-      await query(
+      await client.query(
         `INSERT INTO media_pipeline.media_jobs
           (id, media_asset_id, tenant_id, product_id, pipeline_profile, workflow_version, status, correlation_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $8)`,
         [jobId, mediaId, tenantId, productId, productId, '1.0', correlationId, now],
       );
 
-      await query(
+      await client.query(
         `INSERT INTO media_pipeline.outbox_events
-          (id, event_type, payload, correlation_id, causation_id, idempotency_key, created_at)
-         VALUES ($1, 'MediaUploaded', $2::jsonb, $3, NULL, $4, $5)`,
+          (id, event_type, payload, correlation_id, causation_id, idempotency_key, tenant_id, product_id, created_at)
+         VALUES ($1, 'MediaUploaded', $2::jsonb, $3, NULL, $4, $5, $6, $7)`,
         [
           uuid(),
           JSON.stringify({
@@ -68,15 +70,19 @@ router.post('/api/v1/media/upload', async (c) => {
           }),
           correlationId,
           idempotencyKey,
+          tenantId,
+          productId,
           now,
         ],
       );
 
-      await query('COMMIT');
+      await client.query('COMMIT');
+      client.release();
 
       return c.json({ mediaId, jobId }, 201);
     } catch (err) {
-      await query('ROLLBACK');
+      await client.query('ROLLBACK');
+      client.release();
       throw err;
     }
   } catch (err) {

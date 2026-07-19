@@ -1,9 +1,9 @@
 import os from 'node:os';
-import type { EventEnvelope } from '@2mbi/contracts';
+import { EventEnvelope } from '@2mbi/contracts';
 import redis from './redis.js';
 import { parseEnv } from './env.js';
 import { handleMediaUploaded } from './handlers/media-uploaded.js';
-import { processRetrySchedule } from './retry.js';
+import { processRetrySchedule, scheduleRetry } from './retry.js';
 
 const handlers: Record<string, (event: EventEnvelope) => Promise<void>> = {
   MediaUploaded: handleMediaUploaded,
@@ -21,7 +21,7 @@ async function ensureConsumerGroup(): Promise<void> {
   }
 }
 
-export async function startOrchestrator(): Promise<void> {
+async function startEventConsumer(): Promise<void> {
   const env = parseEnv();
   const consumer = `orchestrator-${os.hostname()}`;
 
@@ -38,7 +38,10 @@ export async function startOrchestrator(): Promise<void> {
         '>',
       );
 
-      if (!result) continue;
+      if (!result) {
+        await processRetrySchedule();
+        continue;
+      }
 
       const streams = result as Array<[string, Array<[string, Array<string>]>]>;
       for (const [, messages] of streams) {
@@ -47,24 +50,34 @@ export async function startOrchestrator(): Promise<void> {
           if (payloadIdx === -1 || payloadIdx + 1 >= fields.length) continue;
 
           const raw = fields[payloadIdx + 1];
-          let event: EventEnvelope;
-          try {
-            event = JSON.parse(raw as string) as EventEnvelope;
-          } catch {
+
+          const parsed = EventEnvelope.safeParse(JSON.parse(raw as string));
+          if (!parsed.success) {
+            console.error(`Invalid event envelope for message ${messageId}:`, parsed.error);
             await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
+            await redis.xadd(env.DLQ_STREAM, '*', 'payload', JSON.stringify({
+              originalRaw: raw,
+              errors: parsed.error.flatten(),
+              timestamp: new Date().toISOString(),
+            }));
             continue;
           }
+
+          const event = parsed.data;
 
           const handler = handlers[event.messageType];
           if (handler) {
             try {
               await handler(event);
+              await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
             } catch (err) {
               console.error(`Handler failed for ${event.messageType} (${messageId}):`, err);
+              await scheduleRetry(event.messageType, { originalEvent: event }, 0);
+              await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
             }
+          } else {
+            await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
           }
-
-          await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
         }
       }
 
@@ -73,4 +86,18 @@ export async function startOrchestrator(): Promise<void> {
       console.error('Orchestrator loop error:', err);
     }
   }
+}
+
+async function startRetryScheduler(): Promise<void> {
+  while (true) {
+    await processRetrySchedule();
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
+}
+
+export async function startOrchestrator(): Promise<void> {
+  await Promise.all([
+    startEventConsumer(),
+    startRetryScheduler(),
+  ]);
 }
