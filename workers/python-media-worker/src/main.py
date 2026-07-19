@@ -11,7 +11,7 @@ import redis as redis_lib
 from src.capabilities import supports_step
 from src.config import settings
 from src.handlers import HANDLERS
-from src.models import TaskMessage, WorkerResultRequest
+from src.models import TaskMessage
 
 logging.basicConfig(
     level=logging.INFO,
