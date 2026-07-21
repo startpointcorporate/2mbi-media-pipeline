@@ -1,129 +1,187 @@
 # 2mbi-media-pipeline
 
-Mutualised media and AI pipeline for the 2mbi ecosystem (Konektag, ClapCelebrity, etc.).
+Pipeline média mutualisé pour l'écosystème 2MBI (Konektag, ClapCelebrity, etc.).
 
 ## Architecture
 
-Four custom services, event-driven, with PostgreSQL outbox pattern:
+4 services applicatifs, event-driven, PostgreSQL outbox pattern, Redis Streams.
 
 ```
-                    ┌──────────────────────┐
-                    │   Media Pipeline API  │  REST API — upload, CRUD, worker results
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────▼───────────┐
-                    │ Editorial Orchestrator│  Event workflow, retry schedule
-                    └──────┬──────────┬────┘
-                           │          │
-              ┌────────────▼──┐  ┌───▼────────────────┐
-              │ stream:media- │  │ stream:editorial-   │
-              │ tasks         │  │ tasks               │
-              └──────┬────────┘  └──────┬──────────────┘
-                     │                  │
-        ┌────────────▼────────┐  ┌─────▼──────────────────┐
-        │  Python Media       │  │  TypeScript Editorial  │
-        │  Worker             │  │  Worker                │
-        │  (ingestion,       │  │  (LLM analysis,       │
-        │   transcription,    │  │   Postiz publishing)  │
-        │   render)           │  │                        │
-        └─────────────────────┘  └────────────────────────┘
+Vidéo master → Upload → MinIO → FFprobe → Extraction audio → faster-whisper
+    → Transcription (JSON/SRT/VTT) → Ollama analyse éditoriale
+    → Propositions d'extraits → Validation → FFmpeg clips
+    → Formats (16:9, 9:16, 1:1) → Sous-titres → Branding
+    → Media Delivery → Publication Postiz
 ```
 
-- **PostgreSQL**: business metadata + outbox (source of truth)
-- **Redis Streams**: command/event transport (transient)
-- **MinIO**: file storage (source media, generated assets)
-- **Keycloak**: authentication (optional in dev)
-- **Directus**: brand templates only
+### Services applicatifs (déployés par le pipeline)
 
-## Prerequisites
+| Service | Langage | Rôle |
+|---------|---------|------|
+| `media-pipeline-api` | TypeScript/Hono | API REST, upload, CRUD, worker results, heartbeat, outbox, URLs privées, publication |
+| `editorial-orchestrator` | TypeScript | Workflow événementiel, retries, enchaînement des étapes |
+| `editorial-worker` | TypeScript | Analyse LLM via Ollama, préparation et envoi Postiz |
+| `python-media-worker` | Python | FFprobe, extraction audio, faster-whisper, clips FFmpeg, rendus, sous-titres, branding |
+
+### Infrastructure mutualisée 2MBI (non déployée par le pipeline)
+
+| Service | Usage |
+|---------|-------|
+| **PostgreSQL** | Base `media_pipeline_db` dans l'instance partagée |
+| **Redis** | Streams préfixés `2mbi:media:*`, consumer groups, retry schedule |
+| **MinIO** | Bucket `2mbi-media`, stockage objets avec préfixes par tenant |
+| **Ollama** | Analyse éditoriale locale, modèle configurable |
+| **Postiz** | Publication réseaux sociaux, appel API |
+| **Traefik** | Reverse proxy, accès public |
+
+### Redis Streams (préfixés pour isolation)
+
+| Stream | Consumer Group | Consumer |
+|--------|---------------|----------|
+| `2mbi:media:events` | `2mbi:group:orchestrator` | Editorial Orchestrator |
+| `2mbi:media:tasks` | `2mbi:group:media-workers` | Python Media Worker |
+| `2mbi:media:editorial:tasks` | `2mbi:group:editorial-workers` | Editorial Worker |
+| `2mbi:media:dead-letter` | — | Alerting (manuel) |
+
+## Prérequis
 
 - Node.js >= 22
 - pnpm >= 10
-- Python >= 3.12 (for workers/python-media-worker)
-- Docker & Docker Compose (for infrastructure services)
+- Python >= 3.12
+- Docker & Docker Compose
+- Infrastructure 2MBI existante (PostgreSQL, Redis, MinIO, Ollama, Postiz)
 
-## Quick Start
+## Démarrage rapide
 
 ```bash
-# Start infrastructure (PostgreSQL, Redis, MinIO)
+# Infrastructure partagée (si pas déjà lancée)
 docker compose -f infrastructure/docker/docker-compose.yml up -d postgres redis minio
 
-# Install dependencies
+# Installation
 pnpm install
 
-# Run database migrations
+# Migrations PostgreSQL
 pnpm db:migrate
 
-# Start API for development
-pnpm --filter @2mbi/media-pipeline-api dev
+# Développement (tous les services)
+pnpm dev
 ```
 
-Or start the full stack:
+Ou tout lancer via Docker :
 
 ```bash
 docker compose -f infrastructure/docker/docker-compose.yml up -d
 ```
 
-## Local Development
+## Configuration
 
-Run each service individually with hot reload:
+Copier `.env.example` vers `.env` et ajuster :
 
-```bash
-# Media Pipeline API (port 3001)
-pnpm --filter @2mbi/media-pipeline-api dev
+```env
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/media_pipeline_db
+REDIS_URL=redis://:redispass@localhost:6379
 
-# Editorial Orchestrator
-pnpm --filter @2mbi/editorial-orchestrator dev
+# Redis prefixés
+REDIS_MEDIA_EVENTS_STREAM=2mbi:media:events
+REDIS_MEDIA_TASKS_STREAM=2mbi:media:tasks
+REDIS_EDITORIAL_TASKS_STREAM=2mbi:media:editorial:tasks
+REDIS_DEAD_LETTER_STREAM=2mbi:media:dead-letter
 
-# TypeScript Editorial Worker
-pnpm --filter @2mbi/editorial-worker dev
+# MinIO
+MINIO_ENDPOINT=localhost:9000
+MINIO_BUCKET=2mbi-media
 
-# Python Media Worker
-cd workers/python-media-worker && python -m src
+# Ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:8b
+
+# Postiz
+POSTIZ_BASE_URL=https://postiz.2mbiweb.com
+POSTIZ_API_KEY=
+
+# Whisper
+WHISPER_MODEL=small
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
 ```
 
-## Testing
+## API REST
+
+### Upload
+```bash
+curl -X POST http://localhost:3001/api/v1/media/upload \
+  -F "file=@video.mp4" \
+  -F "tenantId=clapscelebrity" \
+  -F "productId=claps"
+```
+
+### Transcription
+```bash
+curl http://localhost:3001/api/v1/transcripts/{mediaId}
+curl "http://localhost:3001/api/v1/transcripts/{mediaId}/download?format=json"
+```
+
+### Clips
+```bash
+curl http://localhost:3001/api/v1/media/{mediaId}/clips
+curl -X PATCH http://localhost:3001/api/v1/media/{mediaId}/clips/{clipId} \
+  -H "Content-Type: application/json" \
+  -d '{"action":"accept"}'
+```
+
+### Assets
+```bash
+curl http://localhost:3001/api/v1/media/{mediaId}/assets
+curl http://localhost:3001/api/v1/assets/{assetId}/private-url
+curl -X POST http://localhost:3001/api/v1/assets/{assetId}/publish
+```
+
+### Publications Postiz
+```bash
+curl -X POST http://localhost:3001/api/v1/publications \
+  -H "Content-Type: application/json" \
+  -d '{"mediaId":"...","channels":["instagram"],"title":"...","description":"...","hashtags":["#test"]}'
+
+curl -X POST http://localhost:3001/api/v1/publications/{id}/publish
+```
+
+## Media Delivery
+
+- **Médias privés** : URLs présignées MinIO, durée 900s (configurable)
+- **Médias publics** : derrière reverse proxy + cache/CDN
+- **MinIO n'est pas le CDN** — c'est le stockage source
+- **Range requests** supportées pour la lecture vidéo
+- **MP4 `faststart`** activé sur toutes les sorties vidéo
+
+## Tests
 
 ```bash
-# Unit tests
-pnpm test
+pnpm test              # Tests unitaires
+pnpm test:integration  # Tests d'intégration
+pnpm test:e2e          # Tests end-to-end (stack complet requis)
 
-# Integration tests
-pnpm test:integration
-
-# End-to-end tests (full stack required)
-pnpm test:e2e
-
-# Python worker tests
-cd workers/python-media-worker && pytest
+cd workers/python-media-worker && pytest  # Tests Python
 ```
 
 ## Project Structure
 
 ```
-├── apps/
-│   └── media-pipeline-api/     # REST API (Node.js/TypeScript)
-├── services/
-│   ├── editorial-orchestrator/ # Event workflow (Node.js/TypeScript)
-│   └── editorial-worker/       # LLM + publishing (Node.js/TypeScript)
-├── workers/
-│   └── python-media-worker/    # Media processing (Python)
-├── packages/
-│   ├── contracts/              # Shared Zod schemas & types
-│   ├── configuration/          # Shared config utilities
-│   ├── observability/          # Logging, metrics
-│   └── test-support/           # Test helpers and shared tests
-├── tests/
-│   ├── end-to-end/             # E2E tests (full stack)
-│   └── integration/            # Integration tests
-├── database/
-│   └── migrations/             # SQL migrations
-├── infrastructure/
-│   └── docker/                 # Dockerfiles & docker-compose
-└── docs/
-    └── decisions/              # Architecture Decision Records
+apps/media-pipeline-api/     API REST (TypeScript/Hono)
+services/
+  editorial-orchestrator/    Orchestration workflow (TypeScript)
+  editorial-worker/          LLM + Postiz (TypeScript)
+workers/python-media-worker/ Média processing (Python)
+packages/contracts/          Schémas Zod partagés
+database/migrations/         Migrations SQL
+infrastructure/docker/       Dockerfiles + compose
+docs/decisions/              ADR
 ```
 
-## Current Status
+## Idempotence & Fiabilité
 
-**Walking skeleton** — core infrastructure (Docker Compose, PostgreSQL schema, Redis streams, CI) operational. Services under active development.
+- Chaque commande porte une `idempotencyKey` (UUIDv4)
+- Workers vérifient l'idempotency key avant traitement
+- Outbox transactionnelle PostgreSQL → Redis
+- Retries avec backoff exponentiel (30s, 120s, 600s par défaut)
+- Max 3 tentatives, puis dead-letter (`2mbi:media:dead-letter`)
+- Pas de `XACK` avant commit métier réussi

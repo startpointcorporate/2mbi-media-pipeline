@@ -9,6 +9,7 @@ export const MediaUploadedData = z.object({
   mimeType: z.string(),
   fileSize: z.number().positive(),
   sourceKey: z.string(),
+  sha256: z.string(),
 });
 export type MediaUploadedData = z.infer<typeof MediaUploadedData>;
 

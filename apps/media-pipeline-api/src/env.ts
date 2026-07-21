@@ -1,22 +1,27 @@
 import { z } from 'zod';
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().url().default('postgres://postgres:postgres@localhost:5432/media_pipeline'),
+  DATABASE_URL: z.string().url().default('postgres://postgres:postgres@localhost:5432/media_pipeline_db'),
   REDIS_URL: z.string().default('redis://:redispass@localhost:6379'),
+  REDIS_MEDIA_EVENTS_STREAM: z.string().default('2mbi:media:events'),
+  REDIS_MEDIA_TASKS_STREAM: z.string().default('2mbi:media:tasks'),
+  REDIS_EDITORIAL_TASKS_STREAM: z.string().default('2mbi:media:editorial:tasks'),
+  REDIS_DEAD_LETTER_STREAM: z.string().default('2mbi:media:dead-letter'),
   MINIO_ENDPOINT: z.string().default('localhost:9000'),
   MINIO_ACCESS_KEY: z.string().default('minioadmin'),
   MINIO_SECRET_KEY: z.string().default('minioadmin'),
-  MINIO_REGION: z.string().default('fr-par'),
+  MINIO_BUCKET: z.string().default('2mbi-media'),
   MINIO_USE_SSL: z
     .string()
     .default('false')
     .transform((v) => v === 'true' || v === '1'),
-  KEYCLOAK_URL: z.string().url().default('http://localhost:8080'),
-  KEYCLOAK_REALM: z.string().default('media-pipeline'),
-  KEYCLOAK_CLIENT_ID: z.string().default('media-api'),
-  KEYCLOAK_CLIENT_SECRET: z.string().default(''),
-  DIRECTUS_URL: z.string().url().default('http://localhost:8055'),
-  DIRECTUS_TOKEN: z.string().default(''),
+  MEDIA_PUBLIC_BASE_URL: z.string().default('https://media.2mbiweb.com'),
+  MEDIA_PRIVATE_URL_TTL_SECONDS: z
+    .string()
+    .default('900')
+    .transform((v) => parseInt(v, 10)),
+  CLIENTS_CONFIG: z.string().default(''),
+  INTERNAL_API_KEY: z.string().default(''),
   MEDIA_PIPELINE_PORT: z
     .string()
     .default('3001')

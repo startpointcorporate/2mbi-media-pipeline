@@ -20,4 +20,6 @@ class WorkerResultRequest(BaseModel):
     step_id: str = Field(alias="stepId")
     idempotency_key: str = Field(alias="idempotencyKey")
     result_type: str = Field(alias="resultType")
+    worker_id: str = Field(default="", alias="workerId")
+    duration_ms: int = Field(default=0, alias="durationMs")
     result: dict[str, Any]

@@ -1,6 +1,6 @@
 import redis from './redis.js';
 import { parseEnv } from './env.js';
-import { BACKOFF_SECONDS, MAX_ATTEMPTS } from './backoff.js';
+import { BACKOFF_SECONDS } from './backoff.js';
 
 const DEFAULT_BACKOFF = [30, 120, 600];
 
@@ -24,7 +24,7 @@ function getTargetStream(step: string, env: ReturnType<typeof parseEnv>): string
     'RenderVideoRequested',
     'RenderImageRequested',
   ]);
-  return mediaSteps.has(step) ? env.STREAM_MEDIA : env.STREAM_EDITORIAL;
+  return mediaSteps.has(step) ? env.REDIS_MEDIA_TASKS_STREAM : env.REDIS_EDITORIAL_TASKS_STREAM;
 }
 
 export async function scheduleRetry(
@@ -32,12 +32,12 @@ export async function scheduleRetry(
   command: Record<string, unknown>,
   attempt: number,
 ): Promise<void> {
-  if (attempt >= MAX_ATTEMPTS) {
-    await sendToDlq(command, `Exceeded max retries (${MAX_ATTEMPTS}) for step: ${step}`);
+  const env = parseEnv();
+  if (attempt >= env.MAX_RETRY_ATTEMPTS) {
+    await sendToDlq(command, `Exceeded max retries (${env.MAX_RETRY_ATTEMPTS}) for step: ${step}`);
     return;
   }
 
-  const env = parseEnv();
   const backoffSeconds = getBackoff(step, attempt);
   const score = Date.now() + backoffSeconds * 1000;
   const entry: RetryEntry = {
@@ -59,7 +59,7 @@ export async function sendToDlq(
     error,
     timestamp: new Date().toISOString(),
   };
-  await redis.xadd(env.DLQ_STREAM, '*', 'payload', JSON.stringify(dlqEntry));
+  await redis.xadd(env.REDIS_DEAD_LETTER_STREAM, '*', 'payload', JSON.stringify(dlqEntry));
 }
 
 export async function processRetrySchedule(): Promise<void> {

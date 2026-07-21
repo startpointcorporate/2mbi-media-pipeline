@@ -1,7 +1,7 @@
 import { getClient } from '../db.js';
 import redis from '../redis.js';
+import { parseEnv } from '../env.js';
 
-const STREAM_KEY = 'stream:pipeline-events';
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 
 async function dispatch(): Promise<void> {
@@ -42,7 +42,8 @@ async function dispatch(): Promise<void> {
             data: row.payload,
           };
 
-          await redis.xadd(STREAM_KEY, '*', 'payload', JSON.stringify(payload));
+          const env = parseEnv();
+          await redis.xadd(env.REDIS_MEDIA_EVENTS_STREAM, '*', 'payload', JSON.stringify(payload));
 
           await client.query(
             `UPDATE media_pipeline.outbox_events

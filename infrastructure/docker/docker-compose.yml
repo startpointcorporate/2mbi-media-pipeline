@@ -7,11 +7,12 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: media_pipeline
+      POSTGRES_DB: media_pipeline_db
     ports: ["5432:5432"]
     volumes: [mpg_postgres_data:/var/lib/postgresql/data]
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d media_pipeline"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d media_pipeline_db"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -22,6 +23,7 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "redispass"]
     ports: ["6379:6379"]
     volumes: [mpg_redis_data:/data]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "redispass", "ping"]
       interval: 5s
@@ -37,6 +39,7 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     ports: ["9000:9000", "9001:9001"]
     volumes: [mpg_minio_data:/data]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -50,18 +53,26 @@ services:
     container_name: mpg-api
     environment:
       PORT: 3001
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/media_pipeline
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/media_pipeline_db
       REDIS_URL: redis://:redispass@redis:6379
+      REDIS_MEDIA_EVENTS_STREAM: 2mbi:media:events
+      REDIS_MEDIA_TASKS_STREAM: 2mbi:media:tasks
+      REDIS_EDITORIAL_TASKS_STREAM: 2mbi:media:editorial:tasks
+      REDIS_DEAD_LETTER_STREAM: 2mbi:media:dead-letter
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      KEYCLOAK_URL: ""
-      KEYCLOAK_REALM: ""
-      KEYCLOAK_CLIENT_ID: ""
-      KEYCLOAK_CLIENT_SECRET: ""
-      DIRECTUS_URL: ""
-      DIRECTUS_TOKEN: ""
+      MINIO_BUCKET: 2mbi-media
+      MEDIA_PUBLIC_BASE_URL: https://media.2mbiweb.com
+      CLIENTS_CONFIG: '[{"tenantId":"konektag","apiKey":"konektag_key","apiSecret":"konektag_secret"},{"tenantId":"clapscelebrity","apiKey":"claps_key","apiSecret":"claps_secret"},{"tenantId":"2mbiweb","apiKey":"2mbiweb_key","apiSecret":"2mbiweb_secret"}]'
+      INTERNAL_API_KEY: internal_secret_key
     ports: ["3001:3001"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -73,11 +84,16 @@ services:
       dockerfile: infrastructure/docker/Dockerfile.orchestrator
     container_name: mpg-orchestrator
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/media_pipeline
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/media_pipeline_db
       REDIS_URL: redis://:redispass@redis:6379
       MEDIA_API_URL: http://media-pipeline-api:3001
+      REDIS_MEDIA_EVENTS_STREAM: 2mbi:media:events
+      REDIS_MEDIA_TASKS_STREAM: 2mbi:media:tasks
+      REDIS_EDITORIAL_TASKS_STREAM: 2mbi:media:editorial:tasks
+      REDIS_DEAD_LETTER_STREAM: 2mbi:media:dead-letter
+    restart: unless-stopped
     depends_on:
-      media-pipeline-api: { condition: service_started }
+      media-pipeline-api: { condition: service_healthy }
 
   python-media-worker:
     build:
@@ -86,12 +102,19 @@ services:
     container_name: mpg-python-worker
     environment:
       REDIS_URL: redis://:redispass@redis:6379
-      CONSUMER_GROUP: group:media-workers
-      STREAM_TASKS: stream:media-tasks
+      CONSUMER_GROUP: 2mbi:group:media-workers
+      STREAM_TASKS: 2mbi:media:tasks
       MEDIA_API_URL: http://media-pipeline-api:3001
       MEDIA_CAPABILITIES: ingestion,transcription,render-video,render-image
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: 2mbi-media
+      MEDIA_API_KEY: internal_secret_key
+    restart: unless-stopped
     depends_on:
       redis: { condition: service_healthy }
+      media-pipeline-api: { condition: service_healthy }
 
   typescript-editorial-worker:
     build:
@@ -99,12 +122,23 @@ services:
       dockerfile: infrastructure/docker/Dockerfile.editorial-worker
     container_name: mpg-ts-worker
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/media_pipeline
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/media_pipeline_db
       REDIS_URL: redis://:redispass@redis:6379
       MEDIA_API_URL: http://media-pipeline-api:3001
-      STREAM_TASKS: stream:editorial-tasks
+      STREAM_TASKS: 2mbi:media:editorial:tasks
+      CONSUMER_GROUP: 2mbi:group:editorial-workers
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3:8b
+      OLLAMA_TIMEOUT_MS: "180000"
+      OLLAMA_TEMPERATURE: "0"
+      EDITORIAL_AI_MAX_CONCURRENCY: "1"
+      POSTIZ_BASE_URL: https://postiz.2mbiweb.com
+      POSTIZ_API_KEY: ""
+      INTERNAL_API_KEY: internal_secret_key
+    restart: unless-stopped
     depends_on:
       redis: { condition: service_healthy }
+      media-pipeline-api: { condition: service_healthy }
 
 volumes:
   mpg_postgres_data:

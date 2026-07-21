@@ -8,4 +8,11 @@ export const BACKOFF_SECONDS: Record<string, number[]> = {
   'PublishingStatusCheckRequested': [300, 900, 1800],
 };
 
-export const MAX_ATTEMPTS = 3;
+export function getMaxRetryAttempts(): number {
+  const env = process.env.MAX_RETRY_ATTEMPTS;
+  if (env) {
+    const parsed = parseInt(env, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 3;
+}

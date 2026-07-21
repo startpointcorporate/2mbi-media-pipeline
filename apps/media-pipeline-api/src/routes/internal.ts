@@ -1,9 +1,22 @@
 import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
 import { WorkerResultPayload, HeartbeatPayload } from '@2mbi/contracts';
 import { query, getClient } from '../db.js';
 import { uuid } from '../lib/crypto.js';
+import { putObject, getObject } from '../minio.js';
+import { authenticateInternal } from '../auth.js';
 
 const router = new Hono();
+
+async function internalAuth(c: Context, next: Next) {
+  const key = c.req.header('x-api-key');
+  if (!authenticateInternal(key)) {
+    return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
+  }
+  await next();
+}
+
+router.use('/internal/*', internalAuth);
 
 router.post('/internal/worker-results', async (c) => {
   try {
@@ -121,3 +134,37 @@ router.post('/internal/job-steps/:stepId/heartbeat', async (c) => {
 });
 
 export default router;
+
+router.put('/internal/objects', async (c) => {
+  try {
+    const body = await c.req.json();
+    const key = body.key as string;
+    const data = body.data as string;
+    const contentType = (body.contentType as string) || 'application/octet-stream';
+
+    if (!key || !data) {
+      return c.json({ error: 'key and data are required' }, 400);
+    }
+
+    await putObject(key, Buffer.from(data, 'base64'), contentType);
+    return c.json({ key, status: 'stored' });
+  } catch (err) {
+    console.error('Store object failed', err);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+router.get('/internal/transcripts/raw', async (c) => {
+  try {
+    const key = c.req.query('key');
+    if (!key) {
+      return c.json({ error: 'key query param required' }, 400);
+    }
+
+    const { body } = await getObject(key);
+    return c.json(JSON.parse(body.toString('utf-8')));
+  } catch (err) {
+    console.error('Get raw transcript failed', err);
+    return c.json({ error: 'Transcript not found' }, 404);
+  }
+});

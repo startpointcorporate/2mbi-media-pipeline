@@ -2,17 +2,31 @@ import os from 'node:os';
 import { EventEnvelope } from '@2mbi/contracts';
 import redis from './redis.js';
 import { parseEnv } from './env.js';
-import { handleMediaUploaded } from './handlers/media-uploaded.js';
+import {
+  handleMediaUploaded,
+  handleMediaIngestionCompleted,
+  handleTranscriptionCompleted,
+  handleMediaContentPlanGenerated,
+  handleMediaContentPlanApproved,
+  handleRenderCompleted,
+  handlePublishingCompleted,
+} from './handlers/media-uploaded.js';
 import { processRetrySchedule, scheduleRetry } from './retry.js';
 
 const handlers: Record<string, (event: EventEnvelope) => Promise<void>> = {
   MediaUploaded: handleMediaUploaded,
+  MediaIngestionCompleted: handleMediaIngestionCompleted,
+  TranscriptionCompleted: handleTranscriptionCompleted,
+  MediaContentPlanGenerated: handleMediaContentPlanGenerated,
+  MediaContentPlanApproved: handleMediaContentPlanApproved,
+  RenderCompleted: handleRenderCompleted,
+  PublishingCompleted: handlePublishingCompleted,
 };
 
 async function ensureConsumerGroup(): Promise<void> {
   const env = parseEnv();
   try {
-    await redis.call('XGROUP', 'CREATE', env.STREAM_EVENTS, env.CONSUMER_GROUP, '$', 'MKSTREAM');
+    await redis.call('XGROUP', 'CREATE', env.REDIS_MEDIA_EVENTS_STREAM, env.CONSUMER_GROUP, '$', 'MKSTREAM');
   } catch (err: unknown) {
     if (err instanceof Error && err.message.includes('BUSYGROUP')) {
       return;
@@ -34,7 +48,7 @@ async function startEventConsumer(): Promise<void> {
         'GROUP', env.CONSUMER_GROUP, consumer,
         'COUNT', '10',
         'BLOCK', '5000',
-        'STREAMS', env.STREAM_EVENTS,
+        'STREAMS', env.REDIS_MEDIA_EVENTS_STREAM,
         '>',
       );
 
@@ -54,8 +68,8 @@ async function startEventConsumer(): Promise<void> {
           const parsed = EventEnvelope.safeParse(JSON.parse(raw as string));
           if (!parsed.success) {
             console.error(`Invalid event envelope for message ${messageId}:`, parsed.error);
-            await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
-            await redis.xadd(env.DLQ_STREAM, '*', 'payload', JSON.stringify({
+            await redis.call('XACK', env.REDIS_MEDIA_EVENTS_STREAM, env.CONSUMER_GROUP, messageId);
+            await redis.xadd(env.REDIS_DEAD_LETTER_STREAM, '*', 'payload', JSON.stringify({
               originalRaw: raw,
               errors: parsed.error.flatten(),
               timestamp: new Date().toISOString(),
@@ -69,14 +83,14 @@ async function startEventConsumer(): Promise<void> {
           if (handler) {
             try {
               await handler(event);
-              await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
+              await redis.call('XACK', env.REDIS_MEDIA_EVENTS_STREAM, env.CONSUMER_GROUP, messageId);
             } catch (err) {
               console.error(`Handler failed for ${event.messageType} (${messageId}):`, err);
               await scheduleRetry(event.messageType, { originalEvent: event }, 0);
-              await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
+              await redis.call('XACK', env.REDIS_MEDIA_EVENTS_STREAM, env.CONSUMER_GROUP, messageId);
             }
           } else {
-            await redis.call('XACK', env.STREAM_EVENTS, env.CONSUMER_GROUP, messageId);
+            await redis.call('XACK', env.REDIS_MEDIA_EVENTS_STREAM, env.CONSUMER_GROUP, messageId);
           }
         }
       }

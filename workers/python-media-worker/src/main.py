@@ -21,24 +21,33 @@ logger = logging.getLogger("python-media-worker")
 
 _active_steps: set[str] = set()
 _active_steps_lock = Lock()
+_http_client: httpx.Client | None = None
 
 
-def send_heartbeat(
-    client: httpx.Client,
-    worker_id: str,
-) -> None:
+def get_http_client() -> httpx.Client:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.Client(
+            base_url=settings.media_api_url,
+            timeout=httpx.Timeout(30.0),
+            headers={"x-api-key": settings.media_api_key},
+        )
+    return _http_client
+
+
+def send_heartbeat(worker_id: str) -> None:
     with _active_steps_lock:
         step_ids = list(_active_steps)
     for step_id in step_ids:
         if not step_id:
             continue
         try:
-            resp = client.post(
-                f"{settings.media_api_url}/internal/job-steps/{step_id}/heartbeat",
+            resp = get_http_client().post(
+                f"/internal/job-steps/{step_id}/heartbeat",
                 json={
                     "workerId": worker_id,
                     "progress": 0,
-                    "leaseDurationSeconds": 60,
+                    "leaseDurationSeconds": settings.lease_duration_seconds,
                 },
                 timeout=10,
             )
@@ -48,10 +57,9 @@ def send_heartbeat(
 
 
 def heartbeat_loop(worker_id: str, stop: Event) -> None:
-    with httpx.Client(base_url=settings.media_api_url) as client:
-        while not stop.is_set():
-            send_heartbeat(client, worker_id)
-            stop.wait(15)
+    while not stop.is_set():
+        send_heartbeat(worker_id)
+        stop.wait(settings.heartbeat_interval_seconds)
 
 
 def main() -> None:
@@ -98,7 +106,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    logger.info("Waiting for messages...")
+    logger.info("Waiting for messages on stream '%s'...", settings.stream_tasks)
 
     while not shutdown.is_set():
         try:
@@ -125,6 +133,8 @@ def main() -> None:
                 )
 
     heartbeat_thread.join(timeout=5)
+    if _http_client:
+        _http_client.close()
     logger.info("Worker shut down gracefully")
 
 
@@ -141,7 +151,7 @@ def process_message(
         decoded[key] = v.decode() if isinstance(v, bytes) else v
 
     step_name = decoded.get("step", "?")
-    logger.info("Received message [%s]: %s", msg_id, step_name)
+    logger.info("Received message [%s]: step=%s", msg_id, step_name)
 
     try:
         task = TaskMessage.model_validate(decoded)
@@ -166,8 +176,19 @@ def process_message(
         with _active_steps_lock:
             _active_steps.add(step_id)
 
+    result = None
     try:
-        result = handler(task, settings)
+        import asyncio
+
+        if asyncio.iscoroutinefunction(handler):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(handler(task.data, task.idempotency_key))
+        else:
+            result = handler(task.data, task.idempotency_key)
     except Exception as exc:
         logger.error("Handler failed for step '%s' [%s]: %s", task.step, msg_id, exc)
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
@@ -177,16 +198,20 @@ def process_message(
             with _active_steps_lock:
                 _active_steps.discard(step_id)
 
+    if result is None:
+        logger.warning("Handler returned None for step '%s' [%s]", task.step, msg_id)
+        redis_client.xack(stream_name, settings.consumer_group, msg_id)
+        return
+
     try:
-        with httpx.Client(base_url=settings.media_api_url) as client:
-            resp = client.post(
-                "/internal/worker-results",
-                json=result.model_dump(by_alias=True),
-                timeout=30,
-            )
-            logger.info("Worker result posted: %s", resp.status_code)
-            if resp.status_code >= 400:
-                logger.error("API returned %s: %s", resp.status_code, resp.text)
+        resp = get_http_client().post(
+            "/internal/worker-results",
+            json=result.model_dump(by_alias=True),
+            timeout=30,
+        )
+        logger.info("Worker result posted: %s", resp.status_code)
+        if resp.status_code >= 400:
+            logger.error("API returned %s: %s", resp.status_code, resp.text)
     except Exception as exc:
         logger.error("Failed to post worker result: %s", exc)
 

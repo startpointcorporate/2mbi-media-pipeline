@@ -1,21 +1,51 @@
-import crypto from 'node:crypto';
+import { z } from 'zod';
 import { Hono } from 'hono';
+import type { Context, Next } from 'hono';
 import { query, getClient } from '../db.js';
 import { putObject } from '../minio.js';
 import { uuid } from '../lib/crypto.js';
+import { authenticateRequest } from '../auth.js';
+import crypto from 'node:crypto';
 
-const router = new Hono();
+interface AppVariables {
+  tenantId: string;
+}
+
+const router = new Hono<{ Variables: AppVariables }>();
+
+async function authMiddleware(c: Context, next: Next) {
+  const tenantId = c.req.header('x-tenant-id');
+  const apiKey = c.req.header('x-api-key');
+  const apiSecret = c.req.header('x-api-secret');
+
+  const resolvedTenant = authenticateRequest(tenantId, apiKey, apiSecret);
+  if (!resolvedTenant) {
+    return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
+  }
+
+  c.set('tenantId', resolvedTenant);
+  await next();
+}
+
+router.use('/api/*', authMiddleware);
+
+const uploadBodySchema = z.object({
+  file: z.instanceof(File),
+  productId: z.string().min(1),
+  pipelineProfile: z.string().min(1).optional(),
+});
 
 router.post('/api/v1/media/upload', async (c) => {
   try {
+    const tenantId = c.get('tenantId') as string;
     const body = await c.req.parseBody();
-    const file = body['file'];
-    const tenantId = body['tenantId'];
-    const productId = body['productId'];
-
-    if (!(file instanceof File) || typeof tenantId !== 'string' || typeof productId !== 'string') {
-      return c.json({ error: 'Missing required fields: file, tenantId, productId' }, 400);
+    const validation = uploadBodySchema.safeParse(body);
+    if (!validation.success) {
+      return c.json({ error: 'Invalid input', details: validation.error.flatten() }, 400);
     }
+
+    const { file, productId } = validation.data;
+    const pipelineProfile = validation.data.pipelineProfile ?? 'default';
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -29,9 +59,9 @@ router.post('/api/v1/media/upload', async (c) => {
     const correlationId = uuid();
     const idempotencyKey = uuid();
     const now = new Date().toISOString();
-    const sourceKey = `${tenantId}/${mediaId}/${filename}`;
+    const sourceKey = `masters/${tenantId}/${mediaId}/${filename}`;
 
-    await putObject('media-source', sourceKey, buffer, mimeType);
+    await putObject(sourceKey, buffer, mimeType);
 
     const client = await getClient();
     try {
@@ -48,7 +78,7 @@ router.post('/api/v1/media/upload', async (c) => {
         `INSERT INTO media_pipeline.media_jobs
           (id, media_asset_id, tenant_id, product_id, pipeline_profile, workflow_version, status, correlation_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $8)`,
-        [jobId, mediaId, tenantId, productId, productId, '1.0', correlationId, now],
+        [jobId, mediaId, tenantId, productId, pipelineProfile, '1.0', correlationId, now],
       );
 
       await client.query(
@@ -93,7 +123,7 @@ router.post('/api/v1/media/upload', async (c) => {
 
 router.get('/api/v1/jobs', async (c) => {
   try {
-    const tenantId = c.req.query('tenantId');
+    const tenantId = c.get('tenantId') as string;
     const productId = c.req.query('productId');
     const status = c.req.query('status');
     const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '20', 10) || 20, 1), 100);
@@ -103,10 +133,9 @@ router.get('/api/v1/jobs', async (c) => {
     const params: unknown[] = [];
     let idx = 1;
 
-    if (tenantId) {
-      conditions.push(`tenant_id = $${idx++}`);
-      params.push(tenantId);
-    }
+    conditions.push(`tenant_id = $${idx++}`);
+    params.push(tenantId);
+
     if (productId) {
       conditions.push(`product_id = $${idx++}`);
       params.push(productId);
