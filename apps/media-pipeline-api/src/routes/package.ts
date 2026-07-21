@@ -5,6 +5,7 @@ import { query, getClient } from '../db.js';
 import { presignedGetUrl, putObject, getObject } from '../minio.js';
 import { uuid } from '../lib/crypto.js';
 import { generatePackage } from '../package-builder.js';
+import { validateZipStructure } from '../zip-validator.js';
 
 interface AppVariables {
   tenantId: string;
@@ -16,9 +17,11 @@ router.use('/api/*', async (c: Context, next: Next) => {
   const tenantId = c.req.header('x-tenant-id');
   const apiKey = c.req.header('x-api-key');
   const apiSecret = c.req.header('x-api-secret');
+  const timestamp = c.req.header('x-timestamp');
+  const nonce = c.req.header('x-nonce');
 
   const { authenticateRequest } = await import('../auth.js');
-  const resolvedTenant = authenticateRequest(tenantId, apiKey, apiSecret);
+  const resolvedTenant = await authenticateRequest(tenantId, apiKey, apiSecret, timestamp, nonce);
   if (!resolvedTenant) {
     return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
   }
@@ -176,6 +179,12 @@ router.post('/api/v1/media/:mediaId/package/modify', async (c) => {
 
     const pkg = result.rows[0];
     const buffer = Buffer.from(await file.arrayBuffer());
+
+    const validation = await validateZipStructure(buffer);
+    if (!validation.valid) {
+      return c.json({ error: 'Invalid ZIP structure', details: validation.errors }, 400);
+    }
+
     const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
     const modifiedKey = `packages/${mediaId}/modified-${Date.now()}.zip`;
 

@@ -7,10 +7,10 @@ from src.handlers.render_video import handle_render_video
 from src.handlers.transcription import handle_transcription
 
 HANDLERS: dict[str, Callable[..., Any]] = {
-    "ingestion": handle_ingestion,
-    "transcription": handle_transcription,
-    "render-video": handle_render_video,
-    "render-image": handle_render_image,
+    "IngestionRequested": handle_ingestion,
+    "TranscriptionRequested": handle_transcription,
+    "RenderVideoRequested": handle_render_video,
+    "RenderImageRequested": handle_render_image,
 }
 
 __all__ = ["HANDLERS"]

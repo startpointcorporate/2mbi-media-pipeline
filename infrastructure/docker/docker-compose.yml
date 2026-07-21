@@ -105,7 +105,7 @@ services:
       CONSUMER_GROUP: 2mbi:group:media-workers
       STREAM_TASKS: 2mbi:media:tasks
       MEDIA_API_URL: http://media-pipeline-api:3001
-      MEDIA_CAPABILITIES: ingestion,transcription,render-video,render-image
+      MEDIA_CAPABILITIES: IngestionRequested,TranscriptionRequested,RenderVideoRequested,RenderImageRequested
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin

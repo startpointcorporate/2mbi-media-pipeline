@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     stream_tasks: str = "2mbi:media:tasks"
     media_api_url: str = "http://media-pipeline-api:3001"
     media_api_key: str = "internal_secret_key"
-    media_capabilities: str = "ingestion,transcription,render-video,render-image"
+    media_capabilities: str = "IngestionRequested,TranscriptionRequested,RenderVideoRequested,RenderImageRequested"
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"

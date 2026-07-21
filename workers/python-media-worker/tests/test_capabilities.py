@@ -6,27 +6,27 @@ from src.capabilities import get_capabilities, supports_step
 def test_default_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MEDIA_CAPABILITIES", raising=False)
     caps = get_capabilities()
-    assert caps == {"ingestion", "transcription", "render-video", "render-image"}
+    assert caps == {"IngestionRequested", "TranscriptionRequested", "RenderVideoRequested", "RenderImageRequested"}
 
 
 def test_single_capability(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MEDIA_CAPABILITIES", "transcription")
+    monkeypatch.setenv("MEDIA_CAPABILITIES", "TranscriptionRequested")
     caps = get_capabilities()
-    assert caps == {"transcription"}
-    assert supports_step("transcription") is True
-    assert supports_step("ingestion") is False
-    assert supports_step("render-video") is False
-    assert supports_step("render-image") is False
+    assert caps == {"TranscriptionRequested"}
+    assert supports_step("TranscriptionRequested") is True
+    assert supports_step("IngestionRequested") is False
+    assert supports_step("RenderVideoRequested") is False
+    assert supports_step("RenderImageRequested") is False
 
 
 def test_multiple_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MEDIA_CAPABILITIES", "ingestion,render-video")
+    monkeypatch.setenv("MEDIA_CAPABILITIES", "IngestionRequested,RenderVideoRequested")
     caps = get_capabilities()
-    assert caps == {"ingestion", "render-video"}
-    assert supports_step("ingestion") is True
-    assert supports_step("transcription") is False
-    assert supports_step("render-video") is True
-    assert supports_step("render-image") is False
+    assert caps == {"IngestionRequested", "RenderVideoRequested"}
+    assert supports_step("IngestionRequested") is True
+    assert supports_step("TranscriptionRequested") is False
+    assert supports_step("RenderVideoRequested") is True
+    assert supports_step("RenderImageRequested") is False
 
 
 def test_empty_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:

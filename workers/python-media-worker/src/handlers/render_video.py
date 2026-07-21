@@ -85,6 +85,8 @@ async def handle_render_video(data: dict[str, Any], idempotency_key: str) -> Wor
             except Exception as e:
                 logger.warning("Branding failed (continuing without): %s", e)
 
+        thumb_key = _extract_thumbnail(current, output_prefix, tenant_id, media_id, clip_id)
+
         rendered_key = f"{output_prefix}/{format_name}.mp4"
         upload_file(current, rendered_key, "video/mp4")
 
@@ -152,3 +154,39 @@ def _sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             sha.update(chunk)
     return sha.hexdigest()
+
+
+def _extract_thumbnail(
+    video_path: str,
+    output_prefix: str,
+    tenant_id: str,
+    media_id: str,
+    clip_id: str,
+) -> str | None:
+    tmp_jpg = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+    try:
+        subprocess.run = __import__("subprocess").run
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", video_path,
+            "-ss", "00:00:01",
+            "-vframes", "1",
+            "-q:v", "2",
+            tmp_jpg,
+        ]
+        logger.info("Extracting thumbnail: %s", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.warning("Thumbnail extraction failed: %s", result.stderr)
+            return None
+
+        thumb_key = f"{output_prefix}/thumbnail.jpg"
+        upload_file(tmp_jpg, thumb_key, "image/jpeg")
+        logger.info("Thumbnail generated: %s", thumb_key)
+        return thumb_key
+    except Exception as e:
+        logger.warning("Thumbnail extraction error: %s", e)
+        return None
+    finally:
+        cleanup_temp_files(tmp_jpg)

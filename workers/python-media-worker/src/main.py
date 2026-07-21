@@ -150,28 +150,37 @@ def process_message(
         key = k.decode() if isinstance(k, bytes) else k
         decoded[key] = v.decode() if isinstance(v, bytes) else v
 
-    step_name = decoded.get("step", "?")
-    logger.info("Received message [%s]: step=%s", msg_id, step_name)
+    raw_payload = decoded.get("payload", "")
+    if not raw_payload:
+        logger.warning("Message %s has no payload, XACK and skip", msg_id)
+        redis_client.xack(stream_name, settings.consumer_group, msg_id)
+        return
 
     try:
-        task = TaskMessage.model_validate(decoded)
-    except Exception as exc:
-        logger.error("Failed to parse message %s: %s", msg_id, exc)
+        envelope: dict[str, Any] = __import__("json").loads(raw_payload)
+    except Exception:
+        logger.error("Failed to parse message %s payload as JSON", msg_id)
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
         return
 
-    if not supports_step(task.step):
-        logger.info("Step '%s' not in capabilities, XACK and skip", task.step)
+    step_name = envelope.get("step") or envelope.get("messageType") or "?"
+    task_data = envelope.get("data") or envelope
+    idempotency_key = envelope.get("idempotencyKey") or envelope.get("idempotency_key") or ""
+
+    logger.info("Received message [%s]: step=%s", msg_id, step_name)
+
+    if not supports_step(step_name):
+        logger.info("Step '%s' not in capabilities, XACK and skip", step_name)
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
         return
 
-    handler = HANDLERS.get(task.step)
+    handler = HANDLERS.get(step_name)
     if handler is None:
-        logger.warning("No handler registered for step '%s', XACK and skip", task.step)
+        logger.warning("No handler registered for step '%s', XACK and skip", step_name)
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
         return
 
-    step_id = task.data.get("stepId", "")
+    step_id = task_data.get("stepId", "")
     if step_id:
         with _active_steps_lock:
             _active_steps.add(step_id)
@@ -186,11 +195,11 @@ def process_message(
             except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(handler(task.data, task.idempotency_key))
+            result = loop.run_until_complete(handler(task_data, idempotency_key))
         else:
-            result = handler(task.data, task.idempotency_key)
+            result = handler(task_data, idempotency_key)
     except Exception as exc:
-        logger.error("Handler failed for step '%s' [%s]: %s", task.step, msg_id, exc)
+        logger.error("Handler failed for step '%s' [%s]: %s", step_name, msg_id, exc)
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
         return
     finally:
@@ -199,7 +208,7 @@ def process_message(
                 _active_steps.discard(step_id)
 
     if result is None:
-        logger.warning("Handler returned None for step '%s' [%s]", task.step, msg_id)
+        logger.warning("Handler returned None for step '%s' [%s]", step_name, msg_id)
         redis_client.xack(stream_name, settings.consumer_group, msg_id)
         return
 
